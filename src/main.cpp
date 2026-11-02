@@ -7,6 +7,8 @@
 #include <LovyanGFX.hpp>
 
 #include "DisplayConfig.h"
+#include "ContentPage.h"
+#include "NoWifiPage.h"
 
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_ST7789 _panel;
@@ -57,18 +59,32 @@ static constexpr uint16_t SCREEN_WIDTH = 320;
 static constexpr uint16_t SCREEN_HEIGHT = 240;
 static constexpr uint16_t BUFFER_LINES = 40;
 static constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+static constexpr char WIFI_ACCESS_POINT_NAME[] = "AlertScreen-Setup";
 
 static LGFX tft;
 static lv_display_t* display = nullptr;
-static lv_obj_t* uptimeLabel = nullptr;
-static lv_obj_t* messageLabel = nullptr;
-static lv_obj_t* demoButton = nullptr;
+static NoWifiPage noWifiPage(WIFI_ACCESS_POINT_NAME);
+static ContentPage contentPage(tft);
+static Page* activePage = nullptr;
 static uint8_t drawBuffer[SCREEN_WIDTH * BUFFER_LINES * 2];
 static unsigned long lastWiFiAttempt = 0;
 static bool wasWiFiConnected = false;
+static bool configPortalStarted = false;
+static bool displayRefreshDeferred = false;
+static WiFiManager wifiManager;
 
 static void displayFlush(lv_display_t* display, const lv_area_t* area,
                          uint8_t* pixels) {
+  if (contentPage.imageRefreshRunning()) {
+    displayRefreshDeferred = true;
+    lv_display_flush_ready(display);
+    return;
+  }
+  if (activePage == &contentPage && contentPage.imageDisplayed()) {
+    lv_display_flush_ready(display);
+    return;
+  }
+
   const uint32_t width = static_cast<uint32_t>(area->x2 - area->x1 + 1);
   const uint32_t height = static_cast<uint32_t>(area->y2 - area->y1 + 1);
 
@@ -80,66 +96,18 @@ static void displayFlush(lv_display_t* display, const lv_area_t* area,
   lv_display_flush_ready(display);
 }
 
-static void buttonEvent(lv_event_t* event) {
-  if (lv_event_get_code(event) == LV_EVENT_CLICKED) {
-    lv_label_set_text(messageLabel, "Nice! The button works.");
+static void showPage(Page& page) {
+  if (activePage != &page) {
+    lv_screen_load(page.create());
+    activePage = &page;
+    page.onShow();
   }
-}
-
-static void updateUptime(lv_timer_t* timer) {
-  (void)timer;
-  char text[40];
-  snprintf(text, sizeof(text), "Uptime: %lu sec",
-           static_cast<unsigned long>(millis() / 1000));
-  lv_label_set_text(uptimeLabel, text);
-}
-
-static void createHelloUi() {
-  lv_obj_t* screen = lv_screen_active();
-  lv_obj_set_style_bg_color(screen, lv_color_hex(0x101827), 0);
-  lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
-
-  lv_obj_t* title = lv_label_create(screen);
-  lv_label_set_text(title, "HELLO WORLD");
-  lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-  lv_obj_set_style_text_color(title, lv_color_hex(0x55E6A5), 0);
-  lv_obj_align(title, LV_ALIGN_CENTER, 0, -72);
-
-  messageLabel = lv_label_create(screen);
-  lv_label_set_text(messageLabel, "LVGL is running on ESP32-C3");
-  lv_obj_set_style_text_font(messageLabel, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(messageLabel, lv_color_hex(0xE6EDF7), 0);
-  lv_obj_set_width(messageLabel, 300);
-  lv_obj_set_style_text_align(messageLabel, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(messageLabel, LV_ALIGN_CENTER, 0, -32);
-
-  demoButton = lv_button_create(screen);
-  lv_obj_set_size(demoButton, 150, 46);
-  lv_obj_align(demoButton, LV_ALIGN_CENTER, 0, 25);
-  lv_obj_set_style_bg_color(demoButton, lv_color_hex(0x2878F0),
-                            LV_PART_MAIN);
-  lv_obj_set_style_radius(demoButton, 12, LV_PART_MAIN);
-  lv_obj_add_event_cb(demoButton, buttonEvent, LV_EVENT_CLICKED, nullptr);
-
-  lv_obj_t* buttonText = lv_label_create(demoButton);
-  lv_label_set_text(buttonText, "PRESS ME");
-  lv_obj_center(buttonText);
-
-  uptimeLabel = lv_label_create(screen);
-  lv_label_set_text(uptimeLabel, "Uptime: 0 sec");
-  lv_obj_set_style_text_color(uptimeLabel, lv_color_hex(0xF7C873), 0);
-  lv_obj_set_style_text_font(uptimeLabel, &lv_font_montserrat_14, 0);
-  lv_obj_align(uptimeLabel, LV_ALIGN_CENTER, 0, 88);
-
-  lv_timer_create(updateUptime, 1000, nullptr);
 }
 
 void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("Starting ESP32-C3 LVGL Hello World...");
-
-  pinMode(9, INPUT_PULLUP);
 
   tft.init();
   tft.setRotation(TFT_ROTATION);
@@ -152,69 +120,81 @@ void setup() {
   lv_display_set_flush_cb(display, displayFlush);
   lv_display_set_buffers(display, drawBuffer, nullptr, sizeof(drawBuffer),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
-  createHelloUi();
+  showPage(noWifiPage);
+  noWifiPage.showConnecting();
   lv_timer_handler();
   Serial.println("LVGL UI ready.");
 
   WiFi.mode(WIFI_STA);
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
-  WiFiManager wifiManager;
-  wifiManager.setConfigPortalTimeout(180);
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConfigPortalTimeout(0);
   Serial.println(
       "Connect to the AlertScreen-Setup Wi-Fi network to choose your Wi-Fi.");
 
-  if (!wifiManager.autoConnect("AlertScreen-Setup")) {
-    Serial.println("Wi-Fi setup timed out; restarting to try again.");
-    ESP.restart();
+  wasWiFiConnected = wifiManager.autoConnect(WIFI_ACCESS_POINT_NAME);
+  configPortalStarted = !wasWiFiConnected;
+  if (wasWiFiConnected) {
+    showPage(contentPage);
+    esp_bt_controller_disable();
+    WiFi.setAutoReconnect(true);
+    Serial.print("Wi-Fi connected. IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("Wi-Fi setup access point is running.");
+    noWifiPage.showAccessPointInstructions();
   }
 
-  esp_bt_controller_disable();
   WiFi.setAutoReconnect(true);
   lastWiFiAttempt = millis();
-  Serial.print("Wi-Fi connected. IP address: ");
-  Serial.println(WiFi.localIP());
-  wasWiFiConnected = true;
 }
 
 void loop() {
   static uint32_t previousMs = millis();
-  static bool lastRawState = HIGH;
-  static bool stableState = HIGH;
-  static uint32_t debounceStarted = 0;
 
   const uint32_t now = millis();
   lv_tick_inc(now - previousMs);
   previousMs = now;
 
-  const bool rawState = digitalRead(9);
-  if (rawState != lastRawState) {
-    lastRawState = rawState;
-    debounceStarted = now;
-  }
-  if ((now - debounceStarted) > 30 && rawState != stableState) {
-    stableState = rawState;
-    if (stableState == LOW && demoButton != nullptr) {
-      lv_obj_send_event(demoButton, LV_EVENT_CLICKED, nullptr);
-    }
-  }
-
-  lv_timer_handler();
-
   const bool isWiFiConnected = WiFi.status() == WL_CONNECTED;
   if (isWiFiConnected && !wasWiFiConnected) {
+    showPage(contentPage);
     Serial.print("Wi-Fi connected. IP address: ");
     Serial.println(WiFi.localIP());
+    esp_bt_controller_disable();
+    if (configPortalStarted) {
+      wifiManager.stopConfigPortal();
+      configPortalStarted = false;
+    }
   } else if (!isWiFiConnected && wasWiFiConnected) {
+    showPage(noWifiPage);
+    noWifiPage.showAccessPointInstructions();
     Serial.println("Wi-Fi disconnected.");
+    wifiManager.startConfigPortal(WIFI_ACCESS_POINT_NAME);
+    configPortalStarted = true;
   }
   wasWiFiConnected = isWiFiConnected;
 
-  if (!isWiFiConnected &&
-      millis() - lastWiFiAttempt >= WIFI_RETRY_INTERVAL_MS) {
-    Serial.println("Retrying Wi-Fi connection...");
-    WiFi.reconnect();
-    lastWiFiAttempt = millis();
+  if (!isWiFiConnected) {
+    if (configPortalStarted) {
+      wifiManager.process();
+    }
+
+    if (millis() - lastWiFiAttempt >= WIFI_RETRY_INTERVAL_MS) {
+      Serial.println("Retrying Wi-Fi connection...");
+      WiFi.reconnect();
+      lastWiFiAttempt = millis();
+    }
   }
 
+  if (displayRefreshDeferred && !contentPage.imageRefreshRunning()) {
+    displayRefreshDeferred = false;
+    lv_obj_invalidate(lv_screen_active());
+  }
+
+  lv_timer_handler();
+  if (activePage != nullptr) {
+    activePage->update();
+  }
   delay(5);
 }
