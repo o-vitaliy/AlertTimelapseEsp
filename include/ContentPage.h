@@ -1,5 +1,7 @@
 #pragma once
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <lvgl.h>
 #include <LovyanGFX.hpp>
 
@@ -22,6 +24,7 @@ class ContentPage : public Page {
   lv_obj_t* loadingLabel_ = nullptr;
   unsigned long lastImageRefresh_ = 0;
   bool imageRefreshPending_ = true;
+  TaskHandle_t imageTask_ = nullptr;
   volatile bool imageTaskRunning_ = false;
   volatile bool imageTaskCompleted_ = false;
   volatile bool imageTaskSucceeded_ = false;

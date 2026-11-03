@@ -196,5 +196,5 @@ void loop() {
   if (activePage != nullptr) {
     activePage->update();
   }
-  delay(5);
+  delay(1);
 }
