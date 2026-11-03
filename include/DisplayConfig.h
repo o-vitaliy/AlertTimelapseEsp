@@ -8,5 +8,5 @@
 
 #define TFT_NATIVE_WIDTH 240
 #define TFT_NATIVE_HEIGHT 320
-#define TFT_ROTATION 1
+#define TFT_ROTATION 3
 #define TFT_INVERT true
