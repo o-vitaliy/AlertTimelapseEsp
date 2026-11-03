@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <LovyanGFX.hpp>
 
@@ -8,10 +9,13 @@
 namespace {
 
 constexpr char IMAGE_URL[] =
-    "https://alert-timelapse-833376049856.europe-west1.run.app/image";
+    "https://alert-timelapse-833376049856.europe-west1.run.app/api/snapshot-image"
+    "?width=320&height=240&format=jpg&background=000000&legend=false";
 constexpr unsigned long IMAGE_REFRESH_INTERVAL_MS = 60000;
 constexpr uint32_t IMAGE_TASK_STACK_SIZE = 12288;
 constexpr UBaseType_t IMAGE_TASK_PRIORITY = 1;
+constexpr int MAX_IMAGE_SIZE = 64 * 1024;
+constexpr unsigned long IMAGE_READ_TIMEOUT_MS = 15000;
 
 }  // namespace
 
@@ -72,13 +76,17 @@ void ContentPage::update() {
 
   lastImageRefresh_ = now;
   imageRefreshPending_ = false;
-  imageTaskRunning_ = true;
 
-  if (xTaskCreate(imageRefreshTask, "imageRefresh", IMAGE_TASK_STACK_SIZE,
-                  this, IMAGE_TASK_PRIORITY, nullptr) != pdPASS) {
-    imageTaskRunning_ = false;
+  if (imageTask_ == nullptr &&
+      xTaskCreate(imageRefreshTask, "imageRefresh", IMAGE_TASK_STACK_SIZE,
+                  this, IMAGE_TASK_PRIORITY, &imageTask_) != pdPASS) {
+    imageTask_ = nullptr;
     Serial.println("Image refresh failed: could not start background task.");
+    return;
   }
+
+  imageTaskRunning_ = true;
+  xTaskNotifyGive(imageTask_);
 }
 
 bool ContentPage::imageRefreshRunning() const {
@@ -91,13 +99,18 @@ bool ContentPage::imageDisplayed() const {
 
 void ContentPage::imageRefreshTask(void* context) {
   auto* page = static_cast<ContentPage*>(context);
-  page->imageTaskSucceeded_ = page->refreshImage();
-  page->imageTaskCompleted_ = true;
-  page->imageTaskRunning_ = false;
-  vTaskDelete(nullptr);
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    page->imageTaskSucceeded_ = page->refreshImage();
+    page->imageTaskCompleted_ = true;
+    page->imageTaskRunning_ = false;
+  }
 }
 
 bool ContentPage::refreshImage() {
+  Serial.printf("Image refresh: free heap %lu, largest block %lu.\n",
+                ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
@@ -114,18 +127,69 @@ bool ContentPage::refreshImage() {
 
   const int responseCode = http.GET();
   if (responseCode != HTTP_CODE_OK) {
-    Serial.printf("Image refresh failed: HTTP %d.\n", responseCode);
+    char tlsError[100] = "";
+    client.lastError(tlsError, sizeof(tlsError));
+    Serial.printf("Image refresh failed: HTTP %d (%s). TLS: %s\n", responseCode,
+                  HTTPClient::errorToString(responseCode).c_str(), tlsError);
+    http.end();
+    return false;
+  }
+
+  const int imageSize = http.getSize();
+  if (imageSize <= 0 || imageSize > MAX_IMAGE_SIZE) {
+    Serial.printf("Image refresh failed: unexpected size %d.\n", imageSize);
+    http.end();
+    return false;
+  }
+
+  auto* image = static_cast<uint8_t*>(malloc(imageSize));
+  if (image == nullptr) {
+    Serial.printf(
+        "Image refresh failed: could not allocate %d bytes, largest block "
+        "%lu.\n",
+        imageSize, ESP.getMaxAllocHeap());
     http.end();
     return false;
   }
 
   WiFiClient* imageStream = http.getStreamPtr();
-  const bool decoded = display_.drawPng(imageStream, 0, 0, 320, 240, 0, 0,
-                                        -1.0f, -1.0f);
+  int received = 0;
+  unsigned long lastDataAt = millis();
+  while (received < imageSize &&
+         millis() - lastDataAt < IMAGE_READ_TIMEOUT_MS) {
+    const int available = imageStream->available();
+    if (available > 0) {
+      const int remaining = imageSize - received;
+      const int chunk = imageStream->read(
+          image + received, available < remaining ? available : remaining);
+      if (chunk > 0) {
+        received += chunk;
+        lastDataAt = millis();
+      }
+    } else if (!imageStream->connected()) {
+      break;
+    } else {
+      delay(1);
+    }
+  }
+
+  // Release the TLS buffers before decoding.
   http.end();
+  client.stop();
+
+  if (received != imageSize) {
+    Serial.printf("Image refresh failed: received %d of %d bytes.\n", received,
+                  imageSize);
+    free(image);
+    return false;
+  }
+
+  const bool decoded = display_.drawJpg(image, imageSize, 0, 0, 320, 240, 0, 0,
+                                        -1.0f, -1.0f);
+  free(image);
 
   if (!decoded) {
-    Serial.println("Image refresh failed: PNG decoding failed.");
+    Serial.println("Image refresh failed: JPEG decoding failed.");
     return false;
   }
 
