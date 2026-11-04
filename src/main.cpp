@@ -55,33 +55,36 @@ class LGFX : public lgfx::LGFX_Device {
   }
 };
 
-static constexpr uint16_t SCREEN_WIDTH = 320;
-static constexpr uint16_t SCREEN_HEIGHT = 240;
-static constexpr uint16_t BUFFER_LINES = 40;
-static constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
-static constexpr char WIFI_ACCESS_POINT_NAME[] = "AlertScreen-Setup";
+namespace {
 
-static LGFX tft;
-static lv_display_t* display = nullptr;
-static NoWifiPage noWifiPage(WIFI_ACCESS_POINT_NAME);
-static ContentPage contentPage(tft);
-static Page* activePage = nullptr;
-static uint8_t drawBuffer[SCREEN_WIDTH * BUFFER_LINES * 2];
-static unsigned long lastWiFiAttempt = 0;
-static bool wasWiFiConnected = false;
-static bool configPortalStarted = false;
-static bool displayRefreshDeferred = false;
-static WiFiManager wifiManager;
+constexpr uint16_t SCREEN_WIDTH = 320;
+constexpr uint16_t SCREEN_HEIGHT = 240;
+constexpr uint16_t BUFFER_LINES = 40;
+constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+constexpr char WIFI_ACCESS_POINT_NAME[] = "AlertScreen-Setup";
 
-static void displayFlush(lv_display_t* display, const lv_area_t* area,
-                         uint8_t* pixels) {
+LGFX tft;
+NoWifiPage noWifiPage(WIFI_ACCESS_POINT_NAME);
+ContentPage contentPage(tft);
+WiFiManager wifiManager;
+
+Page* activePage = nullptr;
+uint8_t drawBuffer[SCREEN_WIDTH * BUFFER_LINES * 2];
+unsigned long lastWiFiAttempt = 0;
+bool wasWiFiConnected = false;
+bool configPortalStarted = false;
+bool displayRefreshDeferred = false;
+
+// Sends LVGL's output to the panel, except while ContentPage owns the screen.
+void displayFlush(lv_display_t* lvDisplay, const lv_area_t* area,
+                  uint8_t* pixels) {
   if (contentPage.imageRefreshRunning()) {
     displayRefreshDeferred = true;
-    lv_display_flush_ready(display);
+    lv_display_flush_ready(lvDisplay);
     return;
   }
   if (activePage == &contentPage && contentPage.imageDisplayed()) {
-    lv_display_flush_ready(display);
+    lv_display_flush_ready(lvDisplay);
     return;
   }
 
@@ -93,10 +96,10 @@ static void displayFlush(lv_display_t* display, const lv_area_t* area,
                 reinterpret_cast<lgfx::rgb565_t*>(pixels));
   tft.endWrite();
 
-  lv_display_flush_ready(display);
+  lv_display_flush_ready(lvDisplay);
 }
 
-static void showPage(Page& page) {
+void showPage(Page& page) {
   if (activePage != &page) {
     lv_screen_load(page.create());
     activePage = &page;
@@ -104,40 +107,106 @@ static void showPage(Page& page) {
   }
 }
 
+void initPanel() {
+  tft.init();
+  tft.setRotation(TFT_ROTATION);
+  tft.setColorDepth(16);
+  tft.fillScreen(TFT_BLACK);
+}
+
+void initLvgl() {
+  lv_init();
+  lv_display_t* lvDisplay = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
+  lv_display_set_color_format(lvDisplay, LV_COLOR_FORMAT_RGB565);
+  lv_display_set_flush_cb(lvDisplay, displayFlush);
+  lv_display_set_buffers(lvDisplay, drawBuffer, nullptr, sizeof(drawBuffer),
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
+}
+
+// Configures the radio without connecting. The Bluetooth controller is unused,
+// so it is disabled to free its memory.
+void configureWiFi() {
+  esp_bt_controller_disable();
+  WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConfigPortalTimeout(0);
+}
+
+void onWiFiConnected() {
+  showPage(contentPage);
+  Serial.print("Wi-Fi connected. IP address: ");
+  Serial.println(WiFi.localIP());
+  if (configPortalStarted) {
+    wifiManager.stopConfigPortal();
+    configPortalStarted = false;
+  }
+}
+
+void onWiFiDisconnected() {
+  showPage(noWifiPage);
+  noWifiPage.showAccessPointInstructions();
+  Serial.println("Wi-Fi disconnected.");
+  wifiManager.startConfigPortal(WIFI_ACCESS_POINT_NAME);
+  configPortalStarted = true;
+}
+
+// Reacts to connection changes and, while offline, keeps the setup portal
+// and the reconnect attempts going.
+void updateWiFiState() {
+  const bool isWiFiConnected = WiFi.status() == WL_CONNECTED;
+  if (isWiFiConnected && !wasWiFiConnected) {
+    onWiFiConnected();
+  } else if (!isWiFiConnected && wasWiFiConnected) {
+    onWiFiDisconnected();
+  }
+  wasWiFiConnected = isWiFiConnected;
+
+  if (isWiFiConnected) {
+    return;
+  }
+  if (configPortalStarted) {
+    wifiManager.process();
+  }
+  if (millis() - lastWiFiAttempt >= WIFI_RETRY_INTERVAL_MS) {
+    Serial.println("Retrying Wi-Fi connection...");
+    WiFi.reconnect();
+    lastWiFiAttempt = millis();
+  }
+}
+
+// Repaints the screen once an image refresh has finished, so LVGL output that
+// was discarded during the refresh gets drawn.
+void repaintIfDeferred() {
+  if (displayRefreshDeferred && !contentPage.imageRefreshRunning()) {
+    displayRefreshDeferred = false;
+    lv_obj_invalidate(lv_screen_active());
+  }
+}
+
+}  // namespace
+
 void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("Starting ESP32-C3 LVGL Hello World...");
 
-  tft.init();
-  tft.setRotation(TFT_ROTATION);
-  tft.setColorDepth(16);
-  tft.fillScreen(TFT_BLACK);
-
-  lv_init();
-  display = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
-  lv_display_set_color_format(display, LV_COLOR_FORMAT_RGB565);
-  lv_display_set_flush_cb(display, displayFlush);
-  lv_display_set_buffers(display, drawBuffer, nullptr, sizeof(drawBuffer),
-                         LV_DISPLAY_RENDER_MODE_PARTIAL);
+  initPanel();
+  initLvgl();
   showPage(noWifiPage);
   noWifiPage.showConnecting();
   lv_timer_handler();
   Serial.println("LVGL UI ready.");
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-  wifiManager.setConfigPortalBlocking(false);
-  wifiManager.setConfigPortalTimeout(0);
+  configureWiFi();
   Serial.println(
       "Connect to the AlertScreen-Setup Wi-Fi network to choose your Wi-Fi.");
 
   wasWiFiConnected = wifiManager.autoConnect(WIFI_ACCESS_POINT_NAME);
   configPortalStarted = !wasWiFiConnected;
+  WiFi.setAutoReconnect(true);
   if (wasWiFiConnected) {
     showPage(contentPage);
-    esp_bt_controller_disable();
-    WiFi.setAutoReconnect(true);
     Serial.print("Wi-Fi connected. IP address: ");
     Serial.println(WiFi.localIP());
   } else {
@@ -145,7 +214,6 @@ void setup() {
     noWifiPage.showAccessPointInstructions();
   }
 
-  WiFi.setAutoReconnect(true);
   lastWiFiAttempt = millis();
 }
 
@@ -156,41 +224,8 @@ void loop() {
   lv_tick_inc(now - previousMs);
   previousMs = now;
 
-  const bool isWiFiConnected = WiFi.status() == WL_CONNECTED;
-  if (isWiFiConnected && !wasWiFiConnected) {
-    showPage(contentPage);
-    Serial.print("Wi-Fi connected. IP address: ");
-    Serial.println(WiFi.localIP());
-    esp_bt_controller_disable();
-    if (configPortalStarted) {
-      wifiManager.stopConfigPortal();
-      configPortalStarted = false;
-    }
-  } else if (!isWiFiConnected && wasWiFiConnected) {
-    showPage(noWifiPage);
-    noWifiPage.showAccessPointInstructions();
-    Serial.println("Wi-Fi disconnected.");
-    wifiManager.startConfigPortal(WIFI_ACCESS_POINT_NAME);
-    configPortalStarted = true;
-  }
-  wasWiFiConnected = isWiFiConnected;
-
-  if (!isWiFiConnected) {
-    if (configPortalStarted) {
-      wifiManager.process();
-    }
-
-    if (millis() - lastWiFiAttempt >= WIFI_RETRY_INTERVAL_MS) {
-      Serial.println("Retrying Wi-Fi connection...");
-      WiFi.reconnect();
-      lastWiFiAttempt = millis();
-    }
-  }
-
-  if (displayRefreshDeferred && !contentPage.imageRefreshRunning()) {
-    displayRefreshDeferred = false;
-    lv_obj_invalidate(lv_screen_active());
-  }
+  updateWiFiState();
+  repaintIfDeferred();
 
   lv_timer_handler();
   if (activePage != nullptr) {

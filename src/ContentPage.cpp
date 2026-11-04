@@ -14,11 +14,15 @@ namespace {
 constexpr char IMAGE_URL[] =
     "https://alert-timelapse-833376049856.europe-west1.run.app/api/snapshot-image"
     "?width=320&height=240&format=jpg&background=000000&legend=false";
+constexpr int IMAGE_WIDTH = 320;
+constexpr int IMAGE_HEIGHT = 240;
 constexpr unsigned long IMAGE_REFRESH_INTERVAL_MS = 60000;
 constexpr uint32_t IMAGE_TASK_STACK_SIZE = 12288;
 constexpr UBaseType_t IMAGE_TASK_PRIORITY = 1;
 constexpr int MAX_IMAGE_SIZE = 64 * 1024;
+constexpr unsigned long HTTP_TIMEOUT_MS = 15000;
 constexpr unsigned long IMAGE_READ_TIMEOUT_MS = 15000;
+
 constexpr char CLOCK_NTP_SERVER[] = "pool.ntp.org";
 constexpr char CLOCK_TIMEZONE[] = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 constexpr char CLOCK_TIME_FORMAT[] = "%H:%M";
@@ -27,6 +31,7 @@ constexpr float CLOCK_TIME_SCALE = 2.5f;
 constexpr float CLOCK_DATE_SCALE = 2.0f;
 constexpr int32_t CLOCK_PADDING = 4;
 constexpr unsigned long CLOCK_TICK_INTERVAL_MS = 5000;
+
 constexpr char IP_LOOKUP_URL[] = "https://ipwho.is/";
 constexpr char WEATHER_URL_FORMAT[] =
     "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
@@ -43,6 +48,8 @@ constexpr int32_t CLOCK_STRIP_MAX_WIDTH = 96;
 constexpr int32_t CLOCK_STRIP_MAX_HEIGHT = 44;
 uint16_t clockStripPixels[CLOCK_STRIP_MAX_WIDTH * CLOCK_STRIP_MAX_HEIGHT];
 
+using ClockText = char[sizeof("00:00")];
+
 // Maps a WMO weather code (as used by Open-Meteo) to a short word.
 const char* weatherConditionText(int code) {
   if (code == 0) return "Clear";
@@ -54,17 +61,29 @@ const char* weatherConditionText(int code) {
   return "";
 }
 
-bool fetchJson(const char* url, JsonDocument& doc) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
+void formatClockTime(const struct tm& now, ClockText& out) {
+  strftime(out, sizeof(out), CLOCK_TIME_FORMAT, &now);
+}
 
+// Prepares a TLS request. Certificates are not verified (see CLAUDE.md).
+// Returns false if the request could not be started.
+bool beginSecureRequest(WiFiClientSecure& client, HTTPClient& http,
+                        const char* url) {
+  client.setInsecure();
   if (!http.begin(client, url)) {
     return false;
   }
+  http.setConnectTimeout(HTTP_TIMEOUT_MS);
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  return true;
+}
 
-  http.setConnectTimeout(15000);
-  http.setTimeout(15000);
+bool fetchJson(const char* url, JsonDocument& doc) {
+  WiFiClientSecure client;
+  HTTPClient http;
+  if (!beginSecureRequest(client, http, url)) {
+    return false;
+  }
 
   const int responseCode = http.GET();
   if (responseCode != HTTP_CODE_OK) {
@@ -81,6 +100,84 @@ bool fetchJson(const char* url, JsonDocument& doc) {
     Serial.printf("JSON parse failed: %s.\n", error.c_str());
   }
   return !error;
+}
+
+// Reads up to `size` bytes, giving up after IMAGE_READ_TIMEOUT_MS without new
+// data or when the connection closes. Returns the number of bytes read.
+int readImageBody(WiFiClient& stream, uint8_t* buffer, int size) {
+  int received = 0;
+  unsigned long lastDataAt = millis();
+  while (received < size && millis() - lastDataAt < IMAGE_READ_TIMEOUT_MS) {
+    const int available = stream.available();
+    if (available > 0) {
+      const int remaining = size - received;
+      const int chunk = stream.read(buffer + received,
+                                    available < remaining ? available : remaining);
+      if (chunk > 0) {
+        received += chunk;
+        lastDataAt = millis();
+      }
+    } else if (!stream.connected()) {
+      break;
+    } else {
+      delay(1);
+    }
+  }
+  return received;
+}
+
+// Downloads the JPEG into a new heap buffer that the caller must free. Returns
+// nullptr on failure.
+uint8_t* downloadImage(int& imageSize) {
+  WiFiClientSecure client;
+  HTTPClient http;
+  if (!beginSecureRequest(client, http, IMAGE_URL)) {
+    Serial.println("Image refresh failed: could not initialize HTTP client.");
+    return nullptr;
+  }
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setRedirectLimit(3);
+
+  const int responseCode = http.GET();
+  if (responseCode != HTTP_CODE_OK) {
+    char tlsError[100] = "";
+    client.lastError(tlsError, sizeof(tlsError));
+    Serial.printf("Image refresh failed: HTTP %d (%s). TLS: %s\n", responseCode,
+                  HTTPClient::errorToString(responseCode).c_str(), tlsError);
+    http.end();
+    return nullptr;
+  }
+
+  imageSize = http.getSize();
+  if (imageSize <= 0 || imageSize > MAX_IMAGE_SIZE) {
+    Serial.printf("Image refresh failed: unexpected size %d.\n", imageSize);
+    http.end();
+    return nullptr;
+  }
+
+  auto* image = static_cast<uint8_t*>(malloc(imageSize));
+  if (image == nullptr) {
+    Serial.printf(
+        "Image refresh failed: could not allocate %d bytes, largest block "
+        "%lu.\n",
+        imageSize, ESP.getMaxAllocHeap());
+    http.end();
+    return nullptr;
+  }
+
+  const int received = readImageBody(*http.getStreamPtr(), image, imageSize);
+
+  // Release the TLS buffers before decoding.
+  http.end();
+  client.stop();
+
+  if (received != imageSize) {
+    Serial.printf("Image refresh failed: received %d of %d bytes.\n", received,
+                  imageSize);
+    free(image);
+    return nullptr;
+  }
+  return image;
 }
 
 }  // namespace
@@ -119,28 +216,43 @@ void ContentPage::onShow() {
 }
 
 void ContentPage::update() {
-  if (imageTaskCompleted_) {
-    imageTaskCompleted_ = false;
-    overlayPending_ = imageTaskSucceeded_;  // The new image covers the overlays.
-    if (imageTaskSucceeded_) {
-      imageDisplayed_ = true;
-      lv_obj_set_hidden(loadingSpinner_, true);
-      lv_obj_set_hidden(loadingLabel_, true);
-    } else {
-      lv_label_set_text(loadingLabel_, "Image unavailable. Retrying...");
-    }
-    lv_obj_invalidate(screen_);
-  }
+  applyImageRefreshResult();
 
   if (imageDisplayed_ && !imageTaskRunning_) {
     drawOverlays();
     tickClock();
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED) {
+    startImageRefreshIfDue();
+  }
+}
+
+bool ContentPage::imageRefreshRunning() const {
+  return imageTaskRunning_ || imageTaskCompleted_;
+}
+
+bool ContentPage::imageDisplayed() const {
+  return imageDisplayed_;
+}
+
+void ContentPage::applyImageRefreshResult() {
+  if (!imageTaskCompleted_) {
     return;
   }
+  imageTaskCompleted_ = false;
+  overlayPending_ = imageTaskSucceeded_;  // The new image covers the overlays.
+  if (imageTaskSucceeded_) {
+    imageDisplayed_ = true;
+    lv_obj_set_hidden(loadingSpinner_, true);
+    lv_obj_set_hidden(loadingLabel_, true);
+  } else {
+    lv_label_set_text(loadingLabel_, "Image unavailable. Retrying...");
+  }
+  lv_obj_invalidate(screen_);
+}
 
+void ContentPage::startImageRefreshIfDue() {
   const unsigned long now = millis();
   if (imageTaskRunning_ ||
       (!imageRefreshPending_ &&
@@ -163,14 +275,6 @@ void ContentPage::update() {
   xTaskNotifyGive(imageTask_);
 }
 
-bool ContentPage::imageRefreshRunning() const {
-  return imageTaskRunning_ || imageTaskCompleted_;
-}
-
-bool ContentPage::imageDisplayed() const {
-  return imageDisplayed_;
-}
-
 // Computes where the clock sits in the bottom-left corner. The time strip is
 // the band that holds only the time, so it can be restored without touching
 // the date below it.
@@ -188,6 +292,10 @@ ContentPage::ClockLayout ContentPage::measureClock(lgfx::LovyanGFX& target,
   layout.stripHeight = CLOCK_PADDING + timeHeight;
   layout.top = panelHeight - (timeHeight + dateHeight + 2 * CLOCK_PADDING);
   return layout;
+}
+
+ContentPage::ClockLayout ContentPage::currentClockLayout() {
+  return measureClock(display_, display_.height());
 }
 
 // Attaches the strip buffer once. It is filled with image pixels at each
@@ -230,12 +338,12 @@ void ContentPage::drawClockTime(const char* text, const ClockLayout& layout) {
 }
 
 void ContentPage::drawClock(const struct tm& now) {
-  char timeText[sizeof("00:00")];
+  ClockText timeText;
   char dateText[sizeof("00.00.0000")];
-  strftime(timeText, sizeof(timeText), CLOCK_TIME_FORMAT, &now);
+  formatClockTime(now, timeText);
   strftime(dateText, sizeof(dateText), CLOCK_DATE_FORMAT, &now);
 
-  const ClockLayout layout = measureClock(display_, display_.height());
+  const ClockLayout layout = currentClockLayout();
   display_.startWrite();
   drawClockTime(timeText, layout);
   display_.setTextSize(CLOCK_DATE_SCALE);
@@ -256,13 +364,13 @@ void ContentPage::tickClock() {
   if (!getLocalTime(&now, 0)) {
     return;
   }
-  char timeText[sizeof("00:00")];
-  strftime(timeText, sizeof(timeText), CLOCK_TIME_FORMAT, &now);
+  ClockText timeText;
+  formatClockTime(now, timeText);
   if (strcmp(timeText, clockTimeText_) == 0) {
     return;
   }
 
-  const ClockLayout layout = measureClock(display_, display_.height());
+  const ClockLayout layout = currentClockLayout();
   clockStrip_.pushSprite(&display_, 0, layout.top);
   display_.startWrite();
   drawClockTime(timeText, layout);
@@ -389,81 +497,14 @@ bool ContentPage::refreshImage() {
 
   prepareClockStrip();
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-
-  if (!http.begin(client, IMAGE_URL)) {
-    Serial.println("Image refresh failed: could not initialize HTTP client.");
-    return false;
-  }
-
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setRedirectLimit(3);
-  http.setConnectTimeout(15000);
-  http.setTimeout(15000);
-
-  const int responseCode = http.GET();
-  if (responseCode != HTTP_CODE_OK) {
-    char tlsError[100] = "";
-    client.lastError(tlsError, sizeof(tlsError));
-    Serial.printf("Image refresh failed: HTTP %d (%s). TLS: %s\n", responseCode,
-                  HTTPClient::errorToString(responseCode).c_str(), tlsError);
-    http.end();
-    return false;
-  }
-
-  const int imageSize = http.getSize();
-  if (imageSize <= 0 || imageSize > MAX_IMAGE_SIZE) {
-    Serial.printf("Image refresh failed: unexpected size %d.\n", imageSize);
-    http.end();
-    return false;
-  }
-
-  auto* image = static_cast<uint8_t*>(malloc(imageSize));
+  int imageSize = 0;
+  uint8_t* image = downloadImage(imageSize);
   if (image == nullptr) {
-    Serial.printf(
-        "Image refresh failed: could not allocate %d bytes, largest block "
-        "%lu.\n",
-        imageSize, ESP.getMaxAllocHeap());
-    http.end();
     return false;
   }
 
-  WiFiClient* imageStream = http.getStreamPtr();
-  int received = 0;
-  unsigned long lastDataAt = millis();
-  while (received < imageSize &&
-         millis() - lastDataAt < IMAGE_READ_TIMEOUT_MS) {
-    const int available = imageStream->available();
-    if (available > 0) {
-      const int remaining = imageSize - received;
-      const int chunk = imageStream->read(
-          image + received, available < remaining ? available : remaining);
-      if (chunk > 0) {
-        received += chunk;
-        lastDataAt = millis();
-      }
-    } else if (!imageStream->connected()) {
-      break;
-    } else {
-      delay(1);
-    }
-  }
-
-  // Release the TLS buffers before decoding.
-  http.end();
-  client.stop();
-
-  if (received != imageSize) {
-    Serial.printf("Image refresh failed: received %d of %d bytes.\n", received,
-                  imageSize);
-    free(image);
-    return false;
-  }
-
-  const bool decoded = display_.drawJpg(image, imageSize, 0, 0, 320, 240, 0, 0,
-                                        -1.0f, -1.0f);
+  const bool decoded = display_.drawJpg(image, imageSize, 0, 0, IMAGE_WIDTH,
+                                        IMAGE_HEIGHT, 0, 0, -1.0f, -1.0f);
   if (decoded && clockStripReady_) {
     const ClockLayout layout = measureClock(clockStrip_, display_.height());
     clockStrip_.drawJpg(image, imageSize, 0, 0, layout.stripWidth,
