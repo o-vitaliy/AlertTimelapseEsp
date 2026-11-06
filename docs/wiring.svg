@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 680" width="900" height="680" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <rect x="0" y="0" width="900" height="680" fill="#ffffff"/>
+  <text x="450" y="26" text-anchor="middle" font-size="18" font-weight="bold" fill="#212529">AlertScreen wiring</text>
+
+  <!-- ===================== Wires (drawn first, under the boxes) ===================== -->
+  <g fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Logic: ESP32-C3 -> display -->
+    <path d="M350 105 H640" stroke="#e8590c"/>                    <!-- 3V3 -> VCC -->
+    <path d="M640 75 H615 V105" stroke="#e8590c"/>                <!-- BLK -> VCC -->
+    <path d="M350 135 H640" stroke="#212529"/>                    <!-- GND -->
+    <path d="M350 165 H640" stroke="#1c7ed6"/>                    <!-- GPIO4 -> SCL -->
+    <path d="M350 195 H640" stroke="#2f9e44"/>                    <!-- GPIO5 -> SDA -->
+    <path d="M350 225 H640" stroke="#9c36b5"/>                    <!-- GPIO3 -> RES -->
+    <path d="M350 255 H640" stroke="#e67700"/>                    <!-- GPIO2 -> DC -->
+    <path d="M350 285 H640" stroke="#0ca678"/>                    <!-- GPIO10 -> CS -->
+
+    <!-- Power: boost -> ESP32-C3 -->
+    <path d="M70 470 V135 H130" stroke="#212529"/>                <!-- OUT- -> G -->
+    <path d="M100 470 V165 H130" stroke="#d6336c"/>               <!-- OUT+ -> 5V -->
+
+    <!-- Power chain -->
+    <path d="M220 500 H270" stroke="#d6336c"/>                    <!-- boost IN+ <- switch -->
+    <path d="M340 500 H400" stroke="#d6336c"/>                    <!-- switch <- TP4056 OUT+ -->
+    <path d="M220 560 H400" stroke="#212529"/>                    <!-- boost IN- <- TP4056 OUT- -->
+    <path d="M580 500 H640" stroke="#d6336c"/>                    <!-- TP4056 B+ -> battery + -->
+    <path d="M580 560 H640" stroke="#212529"/>                    <!-- TP4056 B- -> battery - -->
+  </g>
+  <circle cx="615" cy="105" r="5" fill="#e8590c"/>
+
+  <!-- ===================== ESP32-C3 SuperMini ===================== -->
+  <rect x="130" y="50" width="220" height="280" rx="8" fill="#e7f5ff" stroke="#1864ab" stroke-width="2"/>
+  <text x="240" y="232" text-anchor="middle" font-weight="bold" fill="#1864ab">ESP32-C3</text>
+  <text x="240" y="250" text-anchor="middle" font-weight="bold" fill="#1864ab">SuperMini</text>
+  <rect x="210" y="295" width="60" height="22" rx="4" fill="#adb5bd"/>
+  <text x="240" y="311" text-anchor="middle" font-size="11" fill="#212529">USB-C</text>
+  <text x="240" y="345" text-anchor="middle" font-size="11" fill="#495057">(flashing / serial)</text>
+  <g fill="#212529">
+    <text x="140" y="139">G</text>
+    <text x="140" y="169">5V</text>
+    <text x="340" y="109" text-anchor="end">3V3</text>
+    <text x="340" y="139" text-anchor="end">G</text>
+    <text x="340" y="169" text-anchor="end">GPIO4</text>
+    <text x="340" y="199" text-anchor="end">GPIO5</text>
+    <text x="340" y="229" text-anchor="end">GPIO3</text>
+    <text x="340" y="259" text-anchor="end">GPIO2</text>
+    <text x="340" y="289" text-anchor="end">GPIO10</text>
+  </g>
+  <g fill="#ffffff" stroke="#212529" stroke-width="1.5">
+    <circle cx="130" cy="135" r="4"/><circle cx="130" cy="165" r="4"/>
+    <circle cx="350" cy="105" r="4"/><circle cx="350" cy="135" r="4"/><circle cx="350" cy="165" r="4"/>
+    <circle cx="350" cy="195" r="4"/><circle cx="350" cy="225" r="4"/><circle cx="350" cy="255" r="4"/>
+    <circle cx="350" cy="285" r="4"/>
+  </g>
+
+  <!-- ===================== Display ===================== -->
+  <rect x="640" y="40" width="230" height="290" rx="8" fill="#f1f3f5" stroke="#495057" stroke-width="2"/>
+  <rect x="730" y="58" width="122" height="254" rx="3" fill="#343a40"/>
+  <text x="791" y="178" text-anchor="middle" font-size="12" fill="#f8f9fa">ST7789V</text>
+  <text x="791" y="196" text-anchor="middle" font-size="12" fill="#f8f9fa">2.0" 240x320</text>
+  <g fill="#212529">
+    <text x="650" y="79">BLK</text>
+    <text x="650" y="109">VCC</text>
+    <text x="650" y="139">GND</text>
+    <text x="650" y="169">SCL</text>
+    <text x="650" y="199">SDA</text>
+    <text x="650" y="229">RES</text>
+    <text x="650" y="259">DC</text>
+    <text x="650" y="289">CS</text>
+  </g>
+  <g fill="#ffffff" stroke="#212529" stroke-width="1.5">
+    <circle cx="640" cy="75" r="4"/><circle cx="640" cy="105" r="4"/><circle cx="640" cy="135" r="4"/>
+    <circle cx="640" cy="165" r="4"/><circle cx="640" cy="195" r="4"/><circle cx="640" cy="225" r="4"/>
+    <circle cx="640" cy="255" r="4"/><circle cx="640" cy="285" r="4"/>
+  </g>
+
+  <!-- wire labels -->
+  <g font-size="11" fill="#495057" text-anchor="middle">
+    <text x="495" y="100">3.3 V</text>
+    <text x="495" y="130">GND</text>
+    <text x="495" y="160">SPI clock</text>
+    <text x="495" y="190">SPI data (MOSI)</text>
+    <text x="495" y="220">reset</text>
+    <text x="495" y="250">data / command</text>
+    <text x="495" y="280">chip select</text>
+  </g>
+
+  <!-- ===================== Boost converter ===================== -->
+  <rect x="40" y="470" width="180" height="120" rx="8" fill="#fff4e6" stroke="#d9480f" stroke-width="2"/>
+  <text x="130" y="530" text-anchor="middle" font-weight="bold" fill="#d9480f">Boost</text>
+  <text x="130" y="548" text-anchor="middle" font-weight="bold" fill="#d9480f">→ 5 V</text>
+  <g fill="#212529" font-size="12">
+    <text x="62" y="490">−</text>
+    <text x="92" y="490">+</text>
+    <text x="50" y="582" font-size="11" fill="#495057">OUT</text>
+    <text x="212" y="504" text-anchor="end">IN+</text>
+    <text x="212" y="564" text-anchor="end">IN−</text>
+  </g>
+  <g fill="#ffffff" stroke="#212529" stroke-width="1.5">
+    <circle cx="70" cy="470" r="4"/><circle cx="100" cy="470" r="4"/>
+    <circle cx="220" cy="500" r="4"/><circle cx="220" cy="560" r="4"/>
+  </g>
+
+  <!-- ===================== Switch ===================== -->
+  <rect x="270" y="478" width="70" height="44" rx="6" fill="#f8f9fa" stroke="#495057" stroke-width="2"/>
+  <path d="M284 506 L326 490" stroke="#212529" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="284" cy="506" r="3" fill="#212529"/><circle cx="326" cy="506" r="3" fill="#212529"/>
+  <text x="305" y="470" text-anchor="middle" font-weight="bold" fill="#212529">Switch</text>
+  <text x="305" y="540" text-anchor="middle" font-size="11" fill="#495057">SPST</text>
+  <g fill="#ffffff" stroke="#212529" stroke-width="1.5">
+    <circle cx="270" cy="500" r="4"/><circle cx="340" cy="500" r="4"/>
+  </g>
+
+  <!-- ===================== TP4056 ===================== -->
+  <rect x="400" y="460" width="180" height="140" rx="8" fill="#ebfbee" stroke="#2b8a3e" stroke-width="2"/>
+  <text x="490" y="525" text-anchor="middle" font-weight="bold" fill="#2b8a3e">TP4056</text>
+  <text x="490" y="543" text-anchor="middle" font-size="11" fill="#2b8a3e">charger + protection</text>
+  <rect x="460" y="578" width="60" height="22" rx="4" fill="#adb5bd"/>
+  <text x="490" y="594" text-anchor="middle" font-size="11" fill="#212529">USB-C</text>
+  <text x="490" y="618" text-anchor="middle" font-size="11" fill="#495057">(charging)</text>
+  <g fill="#212529">
+    <text x="408" y="504">OUT+</text>
+    <text x="408" y="564">OUT−</text>
+    <text x="572" y="504" text-anchor="end">B+</text>
+    <text x="572" y="564" text-anchor="end">B−</text>
+  </g>
+  <g fill="#ffffff" stroke="#212529" stroke-width="1.5">
+    <circle cx="400" cy="500" r="4"/><circle cx="400" cy="560" r="4"/>
+    <circle cx="580" cy="500" r="4"/><circle cx="580" cy="560" r="4"/>
+  </g>
+
+  <!-- ===================== 18650 ===================== -->
+  <rect x="640" y="480" width="210" height="100" rx="40" fill="#e9ecef" stroke="#495057" stroke-width="2"/>
+  <rect x="850" y="515" width="10" height="30" rx="3" fill="#495057"/>
+  <text x="755" y="527" text-anchor="middle" font-weight="bold" fill="#212529">18650 Li-ion</text>
+  <text x="755" y="545" text-anchor="middle" font-size="11" fill="#495057">3.0–4.2 V</text>
+  <g fill="#212529">
+    <text x="652" y="504">+</text>
+    <text x="652" y="564">−</text>
+  </g>
+  <g fill="#ffffff" stroke="#212529" stroke-width="1.5">
+    <circle cx="640" cy="500" r="4"/><circle cx="640" cy="560" r="4"/>
+  </g>
+
+  <!-- ===================== Legend ===================== -->
+  <g font-size="11" fill="#212529">
+    <line x1="40" y1="655" x2="62" y2="655" stroke="#d6336c" stroke-width="3"/><text x="68" y="659">Battery / 5 V +</text>
+    <line x1="170" y1="655" x2="192" y2="655" stroke="#e8590c" stroke-width="3"/><text x="198" y="659">3.3 V</text>
+    <line x1="250" y1="655" x2="272" y2="655" stroke="#212529" stroke-width="3"/><text x="278" y="659">GND</text>
+    <text x="330" y="659" fill="#495057">Pin order is schematic: match each wire by the label printed on the board, not by position.</text>
+  </g>
+</svg>
