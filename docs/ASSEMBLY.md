@@ -14,7 +14,7 @@ A battery-powered desk display: an ESP32-C3 SuperMini drives a 2.0" ST7789V scre
 | 4 | Rocker switch 10×15 mm, SPST, 2-pin | 1 | Snaps into the cutout in the case top. |
 | 5 | ESP32-C3 SuperMini | 1 | |
 | 6 | Estardyn 2.0" TFT, ST7789V, 240×320, SPI | 1 | |
-| 7 | `case.stl` and `cap.stl` (3D printed) | 1 each | |
+| 7 | 3D-printed case: [`case.stl`](case/case.stl) and [`cap.stl`](case/cap.stl) | 1 each | In `docs/case/`. |
 
 **Consumables:** about 1 m of thin silicone wire (26–28 AWG for signals, 22–24 AWG for battery and 5 V), heat-shrink tubing, solder, and Kapton tape or a little hot glue.
 
@@ -69,12 +69,12 @@ On the SuperMini (USB-C at the top, chip facing you), the left row is `5V, G, 3V
 
 ## 4. The case
 
-The case prints as two parts. Directions below are given as seen from the front of the screen.
+The case prints as two parts. The STL files are in [`docs/case/`](case/), and GitHub shows a 3D preview when you open them. Directions below are given as seen from the front of the screen.
 
 | Part | Size | Features |
 |------|------|----------|
-| `case.stl` | 72 × 48 × 38.6 mm | Front window of about 52 × 35 mm with slots behind it that hold the display board. The front is tilted back slightly with a sloped chin at the bottom. There is a 14 × 8.4 mm rocker-switch cutout at the **top, rear-left**, and a 17 × 26 mm board pocket under the **top, rear-right**. |
-| `cap.stl` | 72 × 48 × 5 mm back lid | Snaps into the back of the case. It has a 9 × 4 mm USB-C opening at the **top-right** (seen from the front; top-left when you look at the back). |
+| [`case.stl`](case/case.stl) | 72 × 48 × 38.6 mm | Front window of about 52 × 35 mm with slots behind it that hold the display board. The front is tilted back slightly with a sloped chin at the bottom. There is a 14 × 8.4 mm rocker-switch cutout at the **top, rear-left**, and a 17 × 26 mm board pocket under the **top, rear-right**. |
+| [`cap.stl`](case/cap.stl) | 72 × 48 × 5 mm back lid | Snaps into the back of the case. It has a 9 × 4 mm USB-C opening at the **top-right** (seen from the front; top-left when you look at the back). |
 
 Interior layout:
 
