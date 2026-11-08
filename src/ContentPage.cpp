@@ -193,7 +193,7 @@ bool ContentPage::refreshMap() {
     Serial.println("Map refresh failed: alerts could not be read.");
     return false;
   }
-  // The server treats threats as optional too: alerts still show without them.
+  // Threats are optional: the alerts still show without them.
   if (!fetchThreats(mapState_)) {
     Serial.println("Map refresh: threats could not be read; drawing without them.");
   }

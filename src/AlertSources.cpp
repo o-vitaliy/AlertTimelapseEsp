@@ -25,7 +25,7 @@ constexpr char ALERTS_URL[] = "https://api.alerts.in.ua/v1/alerts/active.json";
 constexpr char THREATS_URL[] = "https://neptun.in.ua/api/v1/threats";
 constexpr char USER_AGENT[] = "AlertScreen/1.0 (ESP32)";
 
-// Keys that may hold a threat's heading, in the order the server checks them,
+// Keys that may hold a threat's heading, in the order they are checked,
 // on the threat itself and then inside its "velocity" object.
 const char* const HEADING_KEYS[] = {"bearingDeg", "bearing_deg", "bearing",
                                     "headingDeg", "heading_deg", "direction"};
@@ -106,7 +106,7 @@ bool startRequest(WiFiClientSecure& client, HTTPClient& http, const char* url,
 
 bool isNull(JsonVariantConst value) { return value.isNull(); }
 
-// A JSON number, or a string holding one, as the server's float() accepts.
+// A JSON number, or a string holding one.
 bool readNumber(JsonVariantConst value, double& out) {
   if (value.is<double>()) {
     out = value.as<double>();
@@ -130,7 +130,7 @@ bool hasKey(JsonObjectConst object, const char* key) {
 }
 
 // The value of the first heading key present in `object`, even when it is
-// null (the server stops at it too); null if none is present.
+// null; null if none is present.
 JsonVariantConst firstHeadingKey(JsonObjectConst object) {
   for (const char* key : HEADING_KEYS) {
     if (hasKey(object, key)) return object[key];
@@ -138,7 +138,8 @@ JsonVariantConst firstHeadingKey(JsonObjectConst object) {
   return JsonVariantConst();
 }
 
-// Mirrors normalize_threats in the server's map_renderer.py.
+// Adds an active threat with valid coordinates; heading and source count are
+// optional.
 void addThreat(JsonObjectConst threat, map_render::MapState& state) {
   const char* status = threat["status"] | "";
   if (strcasecmp(status, "active") != 0) return;

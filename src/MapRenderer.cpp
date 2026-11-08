@@ -1,5 +1,7 @@
 #define MAP_DATA_IMPLEMENTATION  // MapData.h's arrays are defined here
 #include "MapRenderer.h"
+#define THREAT_ICONS_IMPLEMENTATION  // ThreatIcons.h's array is defined here
+#include "ThreatIcons.h"
 
 #include <math.h>
 #include <string.h>
@@ -97,8 +99,8 @@ void drawIcon(const Threat& threat, int top, int rows, int width,
 
   if (x0 >= x1 || y0 >= y1) return;
 
-  const uint8_t* icon = &map_data::ICON_RGBA[threat.icon * map_data::ICON_SIZE *
-                                             map_data::ICON_SIZE * 4];
+  const uint8_t* icon = &threat_icons::ICON_RGBA[threat.icon * threat_icons::ICON_SIZE *
+                                             threat_icons::ICON_SIZE * 4];
   constexpr int samples = ICON_SUBSAMPLES * ICON_SUBSAMPLES;
 
   // The point on the north-up icon that a screen point shows undoes the
@@ -106,8 +108,8 @@ void drawIcon(const Threat& threat, int top, int rows, int width,
   //   u = (dx cos + dy sin) * toSource + half
   //   v = (-dx sin + dy cos) * toSource + half
   // The ESP32-C3 has no FPU, so it is stepped in 16.16 fixed point.
-  const float toSource = map_data::ICON_SIZE / size;
-  const float half = map_data::ICON_SIZE / 2.0f;
+  const float toSource = threat_icons::ICON_SIZE / size;
+  const float half = threat_icons::ICON_SIZE / 2.0f;
   const float uPerX = threat.cosHeading * toSource;
   const float uPerY = threat.sinHeading * toSource;
   const float vPerX = -threat.sinHeading * toSource;
@@ -137,11 +139,11 @@ void drawIcon(const Threat& threat, int top, int rows, int width,
           // >> on a negative value floors, as the float version did.
           const int sx = (uPixel + i * uSubX + j * uSubY) >> 16;
           const int sy = (vPixel + i * vSubX + j * vSubY) >> 16;
-          if (sx < 0 || sy < 0 || sx >= map_data::ICON_SIZE ||
-              sy >= map_data::ICON_SIZE) {
+          if (sx < 0 || sy < 0 || sx >= threat_icons::ICON_SIZE ||
+              sy >= threat_icons::ICON_SIZE) {
             continue;
           }
-          const uint8_t* s = &icon[(sy * map_data::ICON_SIZE + sx) * 4];
+          const uint8_t* s = &icon[(sy * threat_icons::ICON_SIZE + sx) * 4];
           for (int c = 0; c < 3; ++c) sum[c] += s[c] * s[3];
           alphaSum += s[3];
         }
@@ -190,7 +192,7 @@ bool MapState::addThreat(float lat, float lon, float headingDegrees,
       isnan(headingDegrees) ? 0.0f : headingDegrees * DEGREES_TO_RADIANS;
   threat.sinHeading = sinf(angle);
   threat.cosHeading = cosf(angle);
-  threat.icon = icon < map_data::ICON_COUNT ? icon : map_data::UNKNOWN_ICON;
+  threat.icon = icon < threat_icons::ICON_COUNT ? icon : threat_icons::UNKNOWN_ICON;
   threat.count = count;
   return true;
 }

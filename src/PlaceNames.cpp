@@ -1,5 +1,7 @@
 #include "PlaceNames.h"
 
+#include "ThreatIcons.h"
+
 #include <ctype.h>
 #include <string.h>
 
@@ -230,12 +232,12 @@ uint8_t threatIcon(const char* type) {
     key[n++] = static_cast<char>(tolower(static_cast<unsigned char>(*p)));
   }
   key[n] = '\0';
-  if (n == 0) return map_data::UNKNOWN_ICON;
-  if (strstr(key, "group") != nullptr) return map_data::GROUP_ICON;
-  for (const map_data::ThreatIcon& entry : map_data::THREAT_ICONS) {
+  if (n == 0) return threat_icons::UNKNOWN_ICON;
+  if (strstr(key, "group") != nullptr) return threat_icons::GROUP_ICON;
+  for (const threat_icons::ThreatIcon& entry : threat_icons::THREAT_ICONS) {
     if (strcmp(key, entry.type) == 0) return entry.icon;
   }
-  return map_data::UNKNOWN_ICON;
+  return threat_icons::UNKNOWN_ICON;
 }
 
 }  // namespace place_names

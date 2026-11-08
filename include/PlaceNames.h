@@ -4,9 +4,9 @@
 
 #include "MapRenderer.h"
 
-// Matches alerts.in.ua places and NEPTUN threat types to the map, the way the
-// AlertTimelapse server does (`Gazetteer`, `norm` and `_threat_icon_source` in
-// map_renderer.py), using the tables in MapData.h. Plain C++, like MapRenderer.
+// Matches alerts.in.ua places to hromadas, using the tables in MapData.h, and
+// NEPTUN threat types to icons, using ThreatIcons.h. Plain C++, like
+// MapRenderer.
 namespace place_names {
 
 // One alert, with the alerts.in.ua fields used for matching. Missing fields
