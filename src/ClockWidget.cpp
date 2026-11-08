@@ -77,27 +77,26 @@ bool ClockWidget::prepareStrip() {
   return true;
 }
 
-// Saves the image pixels under the time, so tick() can erase the old time.
-void ClockWidget::onImageDecoded(const uint8_t* jpeg, int size) {
+// Saves the map pixels under the time, so tick() can erase the old time.
+void ClockWidget::onMapDrawn(const MapPainter& map) {
   if (!prepareStrip()) {
     return;
   }
-  const Layout layout = measure(strip_, panel_.height());
-  strip_.drawJpg(jpeg, size, 0, 0, layout.stripWidth, layout.stripHeight, 0,
-                 layout.top, -1.0f, -1.0f);
+  map.paint(strip_, measure(strip_, panel_.height()).top);
   imageReady_ = true;
 }
 
-void ClockWidget::drawTime(const char* text, const Layout& layout) {
-  panel_.setFont(&lgfx::fonts::Font2);
-  panel_.setTextDatum(lgfx::textdatum_t::top_left);
-  panel_.setTextColor(TFT_WHITE);
-  panel_.setTextSize(CLOCK_TIME_SCALE);
-  panel_.drawString(text, CLOCK_PADDING, layout.top + CLOCK_PADDING);
+void ClockWidget::drawTime(lgfx::LovyanGFX& target, int32_t top,
+                           const char* text, const Layout& layout) {
+  target.setFont(&lgfx::fonts::Font2);
+  target.setTextDatum(lgfx::textdatum_t::top_left);
+  target.setTextColor(TFT_WHITE);
+  target.setTextSize(CLOCK_TIME_SCALE);
+  target.drawString(text, CLOCK_PADDING, layout.top + CLOCK_PADDING - top);
   strncpy(timeText_, text, sizeof(timeText_));
 }
 
-void ClockWidget::draw() {
+void ClockWidget::draw(lgfx::LovyanGFX& target, int32_t top) {
   struct tm now;
   if (!getLocalTime(&now, 0)) {
     return;
@@ -108,11 +107,12 @@ void ClockWidget::draw() {
   strftime(dateText, sizeof(dateText), CLOCK_DATE_FORMAT, &now);
 
   const Layout layout = currentLayout();
-  panel_.startWrite();
-  drawTime(timeText, layout);
-  panel_.setTextSize(CLOCK_DATE_SCALE);
-  panel_.drawString(dateText, CLOCK_PADDING, layout.top + layout.stripHeight);
-  panel_.endWrite();
+  target.startWrite();
+  drawTime(target, top, timeText, layout);
+  target.setTextSize(CLOCK_DATE_SCALE);
+  target.drawString(dateText, CLOCK_PADDING,
+                    layout.top + layout.stripHeight - top);
+  target.endWrite();
 }
 
 // Redraws only the time once the minute has changed. The old time is erased
@@ -141,6 +141,6 @@ void ClockWidget::tick() {
                     TFT_BLACK);
   }
   panel_.startWrite();
-  drawTime(timeText, layout);
+  drawTime(panel_, 0, timeText, layout);
   panel_.endWrite();
 }

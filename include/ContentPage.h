@@ -6,12 +6,21 @@
 #include <LovyanGFX.hpp>
 
 #include "ClockWidget.h"
+#include "MapRenderer.h"
 #include "Page.h"
 #include "WeatherWidget.h"
 #include "Widget.h"
 
-class ContentPage : public Page {
+// The alert map. The map state is downloaded and drawn on a background task;
+// see imageRefreshTask.
+class ContentPage : public Page, private MapPainter {
  public:
+  // The map is drawn in bands of this many rows, through a static buffer, so
+  // no full-screen framebuffer is needed.
+  static constexpr int32_t MAP_BAND_ROWS = 8;
+  static constexpr int MAP_BAND_COUNT =
+      (map_data::HEIGHT + MAP_BAND_ROWS - 1) / MAP_BAND_ROWS;
+
   explicit ContentPage(lgfx::LGFX_Device& display);
 
   lv_obj_t* create() override;
@@ -21,6 +30,9 @@ class ContentPage : public Page {
   bool imageDisplayed() const;
 
  private:
+  // MapPainter. Runs on the refresh task, which owns mapState_.
+  void paint(lgfx::LGFX_Sprite& target, int32_t top) const override;
+
   // Main-loop side of the image refresh. Safe to touch LVGL here.
   void applyImageRefreshResult();
   void startImageRefreshIfDue();
@@ -29,9 +41,12 @@ class ContentPage : public Page {
 
   // Background-task side. Must not touch LVGL objects.
   static void imageRefreshTask(void* context);
-  bool refreshImage();
+  bool refreshMap();
+  int drawMap();
+  void drawThreatLabels(lgfx::LGFX_Sprite& target, int32_t top) const;
 
   lgfx::LGFX_Device& display_;
+  map_render::MapState mapState_;
   ClockWidget clock_;
   WeatherWidget weather_;
   Widget* widgets_[2];
@@ -48,6 +63,11 @@ class ContentPage : public Page {
   volatile bool imageTaskCompleted_ = false;
   volatile bool imageTaskSucceeded_ = false;
   bool imageDisplayed_ = false;
+  // Hash of each band on the panel; meaningless while bandsOnPanelValid_ is
+  // false (nothing drawn yet, or LVGL drew over the map).
+  uint32_t bandHashes_[MAP_BAND_COUNT] = {};
+  volatile bool bandsOnPanelValid_ = false;
+  volatile bool overlaysInMap_ = false;  // The last map drew the overlays.
   bool overlayPending_ = false;
   bool clockPending_ = false;
 };

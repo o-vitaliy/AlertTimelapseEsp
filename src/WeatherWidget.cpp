@@ -99,7 +99,7 @@ void WeatherWidget::fetchWeather() {
   Serial.printf("Weather: %d C, %s.\n", weatherTemperature_, weatherCondition_);
 }
 
-void WeatherWidget::draw() {
+void WeatherWidget::draw(lgfx::LovyanGFX& target, int32_t top) {
   if (!weatherValid_) {
     return;
   }
@@ -107,34 +107,35 @@ void WeatherWidget::draw() {
   char tempText[8];
   snprintf(tempText, sizeof(tempText), "%d", weatherTemperature_);
 
-  panel_.startWrite();
-  panel_.setFont(&lgfx::fonts::Font2);
-  panel_.setTextDatum(lgfx::textdatum_t::top_left);
-  panel_.setTextColor(TFT_WHITE);
+  target.startWrite();
+  target.setFont(&lgfx::fonts::Font2);
+  target.setTextDatum(lgfx::textdatum_t::top_left);
+  target.setTextColor(TFT_WHITE);
 
   // The degree sign is drawn as a ring, since the font has no glyph for it.
-  panel_.setTextSize(WEATHER_TEMP_SCALE);
-  const int32_t tempWidth = panel_.textWidth(tempText);
-  const int32_t tempHeight = panel_.fontHeight();
-  const int32_t unitWidth = panel_.textWidth("C");
+  target.setTextSize(WEATHER_TEMP_SCALE);
+  const int32_t tempWidth = target.textWidth(tempText);
+  const int32_t tempHeight = target.fontHeight();
+  const int32_t unitWidth = target.textWidth("C");
   const int32_t ringRadius = tempHeight / 10;
   const int32_t ringSpace = 2 * ringRadius + 4;
   const int32_t tempLineWidth = tempWidth + ringSpace + unitWidth;
 
-  panel_.setTextSize(WEATHER_CONDITION_SCALE);
-  const int32_t conditionWidth = panel_.textWidth(weatherCondition_);
+  target.setTextSize(WEATHER_CONDITION_SCALE);
+  const int32_t conditionWidth = target.textWidth(weatherCondition_);
 
   const int32_t right = panel_.width() - WEATHER_PADDING;
-  const int32_t top = WEATHER_PADDING;
+  const int32_t textTop = WEATHER_PADDING - top;
   const int32_t tempX = right - tempLineWidth;
 
-  panel_.setTextSize(WEATHER_TEMP_SCALE);
-  panel_.drawString(tempText, tempX, top);
-  panel_.drawCircle(tempX + tempWidth + 2 + ringRadius, top + ringRadius,
+  target.setTextSize(WEATHER_TEMP_SCALE);
+  target.drawString(tempText, tempX, textTop);
+  target.drawCircle(tempX + tempWidth + 2 + ringRadius, textTop + ringRadius,
                     ringRadius, TFT_WHITE);
-  panel_.drawString("C", tempX + tempWidth + ringSpace, top);
+  target.drawString("C", tempX + tempWidth + ringSpace, textTop);
 
-  panel_.setTextSize(WEATHER_CONDITION_SCALE);
-  panel_.drawString(weatherCondition_, right - conditionWidth, top + tempHeight);
-  panel_.endWrite();
+  target.setTextSize(WEATHER_CONDITION_SCALE);
+  target.drawString(weatherCondition_, right - conditionWidth,
+                    textTop + tempHeight);
+  target.endWrite();
 }

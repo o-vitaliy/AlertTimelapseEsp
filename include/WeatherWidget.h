@@ -9,7 +9,7 @@ class WeatherWidget : public Widget {
   explicit WeatherWidget(lgfx::LovyanGFX& panel);
 
   void fetch() override;
-  void draw() override;
+  void draw(lgfx::LovyanGFX& target, int32_t top) override;
 
  private:
   void fetchLocation();

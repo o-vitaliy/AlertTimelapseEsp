@@ -94,6 +94,7 @@ void displayFlush(lv_display_t* lvDisplay, const lv_area_t* area,
   tft.startWrite();
   tft.pushImage(area->x1, area->y1, width, height,
                 reinterpret_cast<lgfx::rgb565_t*>(pixels));
+  tft.waitDMA();  // LVGL reuses the buffer once flush_ready is called
   tft.endWrite();
 
   lv_display_flush_ready(lvDisplay);

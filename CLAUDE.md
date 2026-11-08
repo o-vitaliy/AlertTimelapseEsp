@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Firmware for an ESP32-C3 (SuperMini, on the `esp32-c3-devkitc-02` board definition) driving a 240x320 ST7789 SPI display in landscape. Once on Wi-Fi, it downloads a 320x240 JPEG from a Cloud Run endpoint every 60 seconds and shows it. Without Wi-Fi, it shows setup instructions and runs a WiFiManager access point (`AlertScreen-Setup`).
+Firmware for an ESP32-C3 (SuperMini, on the `esp32-c3-devkitc-02` board definition) driving a 240x320 ST7789 SPI display in landscape. Once on Wi-Fi, it reads air-raid alerts from the alerts.in.ua API and threat markers from the NEPTUN API every 60 seconds, and draws the alert map of Ukraine itself, from map data compiled into the firmware. Without Wi-Fi, it shows setup instructions and runs a WiFiManager access point (`AlertScreen-Setup`).
 
 Built with PlatformIO, the Arduino framework, LVGL 9, LovyanGFX and WiFiManager.
 
@@ -13,6 +13,7 @@ Built with PlatformIO, the Arduino framework, LVGL 9, LovyanGFX and WiFiManager.
 `pio` may not be on `PATH`; the PlatformIO install is at `~/.platformio/penv/bin/pio`.
 
 ```bash
+export ALERTS_API_TOKEN=...  # alerts.in.ua token, required by every build
 pio run                  # build
 pio run -t upload        # build and flash
 pio device monitor       # serial monitor (115200, over native USB CDC)
@@ -28,14 +29,37 @@ There is one environment (`esp32-c3-devkitc-02`), so `-e` is not needed. There a
 This is the key non-obvious design. Pixels reach the display in two independent ways:
 
 1. **LVGL** renders widgets and sends them through `displayFlush` in `src/main.cpp`.
-2. **`ContentPage`** bypasses LVGL. It downloads the JPEG into a temporary heap buffer, closes the TLS connection to free its memory, then decodes onto the panel with `display_.drawJpg(...)`, so no full framebuffer is held in RAM.
+2. **`ContentPage`** bypasses LVGL. It reads the alerts and threats, closes each TLS connection, then draws the map in 8-row bands through two static sprite buffers (`mapBandPixels`), so no full framebuffer is held in RAM. The panel is sent one buffer by DMA while the next band renders into the other; `waitDMA()` must come before a buffer is pushed again, or half-rendered pixels reach the panel as coloured stripes. It keeps a hash of each band on the panel and sends only the bands that changed, so an unchanged map is not repainted every minute; `onShow()` clears the hashes, since LVGL draws over the map. The draw runs at priority 2, above the Arduino loop.
 
 `displayFlush` arbitrates between them by discarding LVGL's output (it still calls `lv_display_flush_ready`) in two cases:
 
-- **While an image refresh is running:** it sets `displayRefreshDeferred`, and `loop()` invalidates the active screen once the refresh ends so that LVGL repaints.
-- **While `ContentPage` has an image displayed:** nothing LVGL draws on that page reaches the panel. A new widget on `ContentPage` stays invisible once an image is showing, unless this logic changes too.
+- **While a map refresh is running:** it sets `displayRefreshDeferred`, and `loop()` invalidates the active screen once the refresh ends so that LVGL repaints.
+- **While `ContentPage` has a map displayed:** nothing LVGL draws on that page reaches the panel. A new LVGL widget on `ContentPage` stays invisible once a map is showing, unless this logic changes too.
 
-The time and date in the bottom-left corner and the weather in the top-right corner of `ContentPage` therefore skip LVGL too: `ContentPage::drawOverlays()` draws them directly on the panel from the main loop, once after each image refresh. The date and weather draw no background box, so the refresh (which repaints the whole screen) is what clears them. The time is the exception: `ContentPage::tickClock()` redraws it every 5 seconds when the minute changes. It first restores the time's strip from `clockStripPixels`, a static buffer that `refreshImage()` fills with the image pixels under the time, then draws the new time. The clock appears once NTP has synced, and the weather once a location and forecast have been fetched.
+The overlays on `ContentPage` therefore skip LVGL too. They are `Widget`s (`include/Widget.h`): `ClockWidget` (time and date, bottom left) and `WeatherWidget` (top right). `Widget::draw(target, top)` draws onto the panel or into a band. Once NTP has synced, `drawMap()` paints the overlays into every band, so they are part of each band's hash and are never erased by a refresh. The widgets' `fetch()` runs before the map is drawn, so the band has the latest weather. Before the time is known, `ContentPage::drawOverlays()` draws them on the panel from the main loop instead. Between refreshes, `ClockWidget::tick()` redraws the time every 5 seconds when the minute changes. It first restores the time's strip from `clockStripPixels`, a static buffer that `onMapDrawn()` fills by asking the page (a `MapPainter`) to paint those rows again, then draws the new time. The clock appears once NTP has synced, and the weather once a location and forecast have been fetched.
+
+### Map rendering
+
+The device uses no server of its own: each refresh, `src/AlertSources.cpp` calls the alerts.in.ua API (`/v1/alerts/active.json`, with `ALERTS_API_TOKEN`) and the NEPTUN API (`/v1/threats`) directly. Both responses are parsed while streaming, one array element at a time through an ArduinoJson filter (`forEachInArray`), so memory use does not depend on the number of alerts; the requests use HTTP/1.0 so the body is never chunked. A threats failure is logged and the map is drawn without threats; an alerts failure fails the refresh.
+
+The logic mirrors the AlertTimelapse server's `map_renderer.py`, which used to do this work, and must stay in step with it:
+
+- `src/PlaceNames.cpp` matches each alert's oblast, raion, hromada or city name to hromadas, as `Gazetteer.resolve` and `norm` do, and maps NEPTUN threat types to icons, as `_threat_icon_source` does.
+- `fetchThreats` filters and reads threats as `normalize_threats` does.
+
+The map is never stored as an image. `include/MapData.h` is generated by `device_map.py` in the sibling AlertTimelapse repository, which is now only a build-time tool for this firmware. It holds:
+
+- the 320x240 map pre-rasterized to a hromada index per pixel, run-length encoded per row, with anti-aliased border shading as a palette index per run;
+- the place-name tables (FNV-1a hashes of normalized names to hromada indexes);
+- the threat icons as 28x28 RGBA, the threat type aliases and the projection constants.
+
+Do not edit it by hand. Regenerate it, and reflash, after the server's geometry, name matching or icons change:
+
+```bash
+cd ../AlertTimelapse && python -m alert_timelaps.device_map --output ../AlertTimelapseEsp/include/MapData.h
+```
+
+`src/MapRenderer.cpp` collects alert levels and threats in a `MapState` and renders rows (`renderRows`): each pixel's colour is a lookup of its border shade and its hromada's level, then the icons are blended in, turned to their headings. `MapRenderer.cpp` and `PlaceNames.cpp` are plain C++ with no Arduino dependency, so they can be compiled and checked on a computer against the server's Python. The "x N" source-count labels need a font, so `ContentPage::drawThreatLabels()` draws them with LovyanGFX.
 
 ### Threading
 
@@ -60,9 +84,10 @@ Since the portal is non-blocking, avoid long blocking work on the main loop.
 ## Configuration
 
 - **Pins and panel:** `include/DisplayConfig.h`. The panel class (`LGFX`) is defined in `main.cpp`.
-- **Resolution:** the native size is 240x320 in `DisplayConfig.h`, but the rotated 320x240 is hardcoded separately in `main.cpp` (`SCREEN_WIDTH`, `SCREEN_HEIGHT`) and in `ContentPage.cpp` (the `drawJpg` call and the `IMAGE_URL` query string). Changing rotation or panel size means updating all of them.
-- **Image source:** `IMAGE_URL` and `IMAGE_REFRESH_INTERVAL_MS` are at the top of `src/ContentPage.cpp`. TLS certificates are not verified (`client.setInsecure()`).
-- **Clock:** `CLOCK_NTP_SERVER`, `CLOCK_TIMEZONE` (a POSIX TZ string), `CLOCK_TIME_FORMAT`, `CLOCK_DATE_FORMAT` and the `CLOCK_TIME_SCALE` / `CLOCK_DATE_SCALE` text sizes and `CLOCK_TICK_INTERVAL_MS` are also at the top of `src/ContentPage.cpp`.
-- **Weather:** the location comes from an IP lookup (`IP_LOOKUP_URL`, ipwho.is) that runs once per boot, retrying every 10 minutes after a failure. Weather comes from Open-Meteo (`WEATHER_URL_FORMAT`), refreshed every 10 minutes. Both run inside `imageRefreshTask`, so they add to the image refresh time. The device's public IP is sent to the lookup service.
-- **LVGL:** `include/lv_conf.h` is a minimal override, found through `LV_CONF_INCLUDE_SIMPLE` and `-I include`. A Montserrat font size must be enabled there before it can be used; 14, 18 and 24 are currently on. `LV_MEM_SIZE` is reduced to 32 KB because the JPEG buffer must fit in the heap while TLS is connected.
+- **Resolution:** the native size is 240x320 in `DisplayConfig.h`, but the rotated 320x240 is hardcoded separately in `main.cpp` (`SCREEN_WIDTH`, `SCREEN_HEIGHT`) and in `MapData.h` (`WIDTH`, `HEIGHT`, set by the generator's `--width` and `--height`). Changing rotation or panel size means updating all of them.
+- **Map sources:** `ALERTS_URL` and `THREATS_URL` are at the top of `src/AlertSources.cpp`, and `IMAGE_REFRESH_INTERVAL_MS` at the top of `src/ContentPage.cpp`. alerts.in.ua allows about 8-10 requests a minute per IP. TLS certificates are not verified (`client.setInsecure()`).
+- **API token:** the alerts.in.ua token comes from the `ALERTS_API_TOKEN` environment variable at build time: `build_flags` in `platformio.ini` turns it into a define, and a `static_assert` in `AlertSources.cpp` fails the build when it is unset or empty. Export it before `pio run`. The token is compiled into the firmware, so anyone with the device can read it from flash.
+- **Clock:** `CLOCK_NTP_SERVER`, `CLOCK_TIMEZONE` (a POSIX TZ string), `CLOCK_TIME_FORMAT`, `CLOCK_DATE_FORMAT` and the `CLOCK_TIME_SCALE` / `CLOCK_DATE_SCALE` text sizes and `CLOCK_TICK_INTERVAL_MS` are at the top of `src/ClockWidget.cpp`.
+- **Weather:** the location comes from an IP lookup (`IP_LOOKUP_URL`, ipwho.is) that runs once per boot, retrying every 10 minutes after a failure. Weather comes from Open-Meteo (`WEATHER_URL_FORMAT`), refreshed every 10 minutes. Both run inside `imageRefreshTask`, so they add to the map refresh time. The device's public IP is sent to the lookup service.
+- **LVGL:** `include/lv_conf.h` is a minimal override, found through `LV_CONF_INCLUDE_SIMPLE` and `-I include`. A Montserrat font size must be enabled there before it can be used; 14, 18 and 24 are currently on. `LV_MEM_SIZE` is reduced to 32 KB to leave heap for TLS.
 - **Flash:** the `huge_app.csv` partition scheme gives maximum app space and has no OTA partition, so firmware updates must be flashed directly.

@@ -1,107 +1,38 @@
 #include <Arduino.h>
-#include <HTTPClient.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <LovyanGFX.hpp>
 
+#include "AlertSources.h"
 #include "ContentPage.h"
-#include "SecureHttp.h"
 
 namespace {
 
-constexpr char IMAGE_URL[] =
-    "https://alert-timelapse-833376049856.europe-west1.run.app/api/snapshot-image"
-    "?width=320&height=240&format=jpg&background=000000&legend=false";
-constexpr int IMAGE_WIDTH = 320;
-constexpr int IMAGE_HEIGHT = 240;
 constexpr unsigned long IMAGE_REFRESH_INTERVAL_MS = 60000;
 constexpr unsigned long IMAGE_RETRY_INTERVAL_MS = 10000;
 constexpr uint32_t IMAGE_TASK_STACK_SIZE = 12288;
 constexpr UBaseType_t IMAGE_TASK_PRIORITY = 1;
-constexpr int MAX_IMAGE_SIZE = 64 * 1024;
-constexpr unsigned long IMAGE_READ_TIMEOUT_MS = 15000;
+
+constexpr int32_t MAP_BAND_ROWS = ContentPage::MAP_BAND_ROWS;
+// Two band buffers, used in turn: the panel is sent one by DMA, in the
+// background, while the next band is rendered into the other.
+uint16_t mapBandPixels[2][map_data::WIDTH * MAP_BAND_ROWS];
+
+// While drawing, the refresh task runs above the Arduino loop (priority 1), so
+// the loop does not slow the draw down.
+constexpr UBaseType_t MAP_DRAW_PRIORITY = 2;
+
+// FNV-1a over a band's pixels, to tell whether it differs from the panel.
+uint32_t bandHash(const uint16_t* pixels, size_t count) {
+  uint32_t hash = 2166136261u;
+  for (size_t i = 0; i < count; ++i) {
+    hash = (hash ^ pixels[i]) * 16777619u;
+  }
+  return hash;
+}
 
 bool timeAvailable() {
   struct tm now;
   return getLocalTime(&now, 0);
-}
-
-// Reads up to `size` bytes, giving up after IMAGE_READ_TIMEOUT_MS without new
-// data or when the connection closes. Returns the number of bytes read.
-int readImageBody(WiFiClient& stream, uint8_t* buffer, int size) {
-  int received = 0;
-  unsigned long lastDataAt = millis();
-  while (received < size && millis() - lastDataAt < IMAGE_READ_TIMEOUT_MS) {
-    const int available = stream.available();
-    if (available > 0) {
-      const int remaining = size - received;
-      const int chunk = stream.read(buffer + received,
-                                    available < remaining ? available : remaining);
-      if (chunk > 0) {
-        received += chunk;
-        lastDataAt = millis();
-      }
-    } else if (!stream.connected()) {
-      break;
-    } else {
-      delay(1);
-    }
-  }
-  return received;
-}
-
-// Downloads the JPEG into a new heap buffer that the caller must free. Returns
-// nullptr on failure.
-uint8_t* downloadImage(int& imageSize) {
-  WiFiClientSecure client;
-  HTTPClient http;
-  if (!beginSecureRequest(client, http, IMAGE_URL)) {
-    Serial.println("Image refresh failed: could not initialize HTTP client.");
-    return nullptr;
-  }
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setRedirectLimit(3);
-
-  const int responseCode = http.GET();
-  if (responseCode != HTTP_CODE_OK) {
-    char tlsError[100] = "";
-    client.lastError(tlsError, sizeof(tlsError));
-    Serial.printf("Image refresh failed: HTTP %d (%s). TLS: %s\n", responseCode,
-                  HTTPClient::errorToString(responseCode).c_str(), tlsError);
-    http.end();
-    return nullptr;
-  }
-
-  imageSize = http.getSize();
-  if (imageSize <= 0 || imageSize > MAX_IMAGE_SIZE) {
-    Serial.printf("Image refresh failed: unexpected size %d.\n", imageSize);
-    http.end();
-    return nullptr;
-  }
-
-  auto* image = static_cast<uint8_t*>(malloc(imageSize));
-  if (image == nullptr) {
-    Serial.printf(
-        "Image refresh failed: could not allocate %d bytes, largest block "
-        "%lu.\n",
-        imageSize, ESP.getMaxAllocHeap());
-    http.end();
-    return nullptr;
-  }
-
-  const int received = readImageBody(*http.getStreamPtr(), image, imageSize);
-
-  // Release the TLS buffers before decoding.
-  http.end();
-  client.stop();
-
-  if (received != imageSize) {
-    Serial.printf("Image refresh failed: received %d of %d bytes.\n", received,
-                  imageSize);
-    free(image);
-    return nullptr;
-  }
-  return image;
 }
 
 }  // namespace
@@ -139,6 +70,7 @@ void ContentPage::onShow() {
   }
   imageRefreshPending_ = true;
   imageDisplayed_ = false;
+  bandsOnPanelValid_ = false;  // LVGL has drawn the loading screen over them.
   clockPending_ = true;
   lv_obj_set_hidden(loadingSpinner_, false);
   lv_label_set_text(loadingLabel_, "Loading...");
@@ -179,7 +111,9 @@ void ContentPage::applyImageRefreshResult() {
     return;
   }
   imageTaskCompleted_ = false;
-  overlayPending_ = imageTaskSucceeded_;  // The new image covers the overlays.
+  // The overlays are part of the map once the time is known; until then they
+  // are drawn on the panel once it is.
+  overlayPending_ = imageTaskSucceeded_ && !overlaysInMap_;
   nextImageRefreshDelay_ = imageTaskSucceeded_ ? IMAGE_REFRESH_INTERVAL_MS
                                                : IMAGE_RETRY_INTERVAL_MS;
   if (imageTaskSucceeded_) {
@@ -219,7 +153,7 @@ void ContentPage::drawLoadingClock() {
   if (!clockPending_ || !timeAvailable()) {
     return;
   }
-  clock_.draw();
+  clock_.draw(display_, 0);
   clockPending_ = false;
 }
 
@@ -230,7 +164,7 @@ void ContentPage::drawOverlays() {
     return;
   }
   for (Widget* widget : widgets_) {
-    widget->draw();
+    widget->draw(display_, 0);
   }
   overlayPending_ = false;
 }
@@ -239,39 +173,126 @@ void ContentPage::imageRefreshTask(void* context) {
   auto* page = static_cast<ContentPage*>(context);
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    page->imageTaskSucceeded_ = page->refreshImage();
+    // Widgets fetch first, so that the map is drawn with their latest data.
     for (Widget* widget : page->widgets_) {
       widget->fetch();
     }
+    page->imageTaskSucceeded_ = page->refreshMap();
     page->imageTaskCompleted_ = true;
     page->imageTaskRunning_ = false;
   }
 }
 
-bool ContentPage::refreshImage() {
-  Serial.printf("Image refresh: free heap %lu, largest block %lu.\n",
+bool ContentPage::refreshMap() {
+  Serial.printf("Map refresh: free heap %lu, largest block %lu.\n",
                 ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-  int imageSize = 0;
-  uint8_t* image = downloadImage(imageSize);
-  if (image == nullptr) {
+  // mapState_ is only read when drawing, which happens only after a refresh
+  // that succeeded, so it can be filled in place.
+  if (!fetchAlerts(mapState_)) {
+    Serial.println("Map refresh failed: alerts could not be read.");
     return false;
   }
+  // The server treats threats as optional too: alerts still show without them.
+  if (!fetchThreats(mapState_)) {
+    Serial.println("Map refresh: threats could not be read; drawing without them.");
+  }
 
-  const bool decoded = display_.drawJpg(image, imageSize, 0, 0, IMAGE_WIDTH,
-                                        IMAGE_HEIGHT, 0, 0, -1.0f, -1.0f);
-  if (decoded) {
-    for (Widget* widget : widgets_) {
-      widget->onImageDecoded(image, imageSize);
+  const unsigned long drawStart = millis();
+  vTaskPrioritySet(nullptr, MAP_DRAW_PRIORITY);
+  const int bandsPushed = drawMap();
+  for (Widget* widget : widgets_) {
+    widget->onMapDrawn(*this);
+  }
+  vTaskPrioritySet(nullptr, IMAGE_TASK_PRIORITY);
+  Serial.printf(
+      "Map refreshed: %d of %d bands changed, drawn in %lu ms, task stack "
+      "left %u bytes.\n",
+      bandsPushed, MAP_BAND_COUNT, millis() - drawStart,
+      uxTaskGetStackHighWaterMark(nullptr));
+  return true;
+}
+
+// Renders the map and the overlays band by band, and sends to the panel only
+// the bands that differ from what it shows, so an unchanged map is not
+// repainted. Returns the number of bands sent.
+int ContentPage::drawMap() {
+  // Without the time, the clock (and so the overlays) cannot be drawn yet.
+  overlaysInMap_ = timeAvailable();
+  const bool panelValid = bandsOnPanelValid_;
+  lgfx::LGFX_Sprite bands[2] = {lgfx::LGFX_Sprite(&display_),
+                                lgfx::LGFX_Sprite(&display_)};
+  for (int b = 0; b < 2; ++b) {
+    bands[b].setBuffer(mapBandPixels[b], map_data::WIDTH, MAP_BAND_ROWS, 16);
+  }
+  int pushed = 0;
+  int next = 0;  // the buffer to render into; no transfer reads from it
+  display_.startWrite();
+  for (int i = 0; i < MAP_BAND_COUNT; ++i) {
+    const int32_t top = i * MAP_BAND_ROWS;
+    lgfx::LGFX_Sprite& band = bands[next];
+    paint(band, top);
+    if (overlaysInMap_) {
+      for (Widget* widget : widgets_) {
+        widget->draw(band, top);
+      }
+    }
+    const uint32_t hash =
+        bandHash(mapBandPixels[next], map_data::WIDTH * MAP_BAND_ROWS);
+    if (!panelValid || hash != bandHashes_[i]) {
+      // The previous transfer, from the other buffer, must end first: after
+      // this push that buffer is rendered into again.
+      display_.waitDMA();
+      band.pushSprite(&display_, 0, top);
+      bandHashes_[i] = hash;
+      ++pushed;
+      next ^= 1;
     }
   }
-  free(image);
+  display_.waitDMA();
+  display_.endWrite();
+  bandsOnPanelValid_ = true;
+  return pushed;
+}
 
-  if (!decoded) {
-    Serial.println("Image refresh failed: JPEG decoding failed.");
-    return false;
+void ContentPage::paint(lgfx::LGFX_Sprite& target, int32_t top) const {
+  map_render::renderRows(mapState_, top, target.height(), target.width(),
+                         static_cast<uint16_t*>(target.getBuffer()), true);
+  drawThreatLabels(target, top);
+}
+
+// "x N" beside each threat that more than one source reports, in white with a
+// black outline. The sprite clips labels that cross its edges.
+void ContentPage::drawThreatLabels(lgfx::LGFX_Sprite& target,
+                                   int32_t top) const {
+  target.setFont(&lgfx::fonts::Font0);
+  target.setTextSize(1);
+  target.setTextDatum(lgfx::textdatum_t::middle_left);
+  const int32_t halfHeight = target.fontHeight() / 2 + 1;
+  for (int i = 0; i < mapState_.threatCount(); ++i) {
+    const map_render::Threat& threat = mapState_.threat(i);
+    if (threat.count <= 1) {
+      continue;
+    }
+    float left = 0;
+    float centreY = 0;
+    map_render::labelPosition(threat, left, centreY);
+    const int32_t x = static_cast<int32_t>(left) + 1;
+    const int32_t y = static_cast<int32_t>(centreY) - top;
+    if (y + halfHeight < 0 || y - halfHeight >= target.height()) {
+      continue;
+    }
+    char text[sizeof("x 255")];
+    snprintf(text, sizeof(text), "x %u", threat.count);
+    target.setTextColor(TFT_BLACK);
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dx = -1; dx <= 1; ++dx) {
+        if (dx != 0 || dy != 0) {
+          target.drawString(text, x + dx, y + dy);
+        }
+      }
+    }
+    target.setTextColor(TFT_WHITE);
+    target.drawString(text, x, y);
   }
-
-  Serial.println("Content image refreshed.");
-  return true;
 }
