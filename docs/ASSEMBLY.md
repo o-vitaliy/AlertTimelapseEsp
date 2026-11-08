@@ -73,8 +73,8 @@ The case prints as two parts. The STL files are in [`docs/case/`](case/), and Gi
 
 | Part | Size | Features |
 |------|------|----------|
-| [`case.stl`](case/case.stl) | 72 × 48 × 38.6 mm | Front window of about 52 × 35 mm with slots behind it that hold the display board. The front is tilted back slightly with a sloped chin at the bottom. There is a 14 × 8.4 mm rocker-switch cutout at the **top, rear-left**, and a 17 × 26 mm board pocket under the **top, rear-right**. |
-| [`cap.stl`](case/cap.stl) | 72 × 48 × 5 mm back lid | Snaps into the back of the case. It has a 9 × 4 mm USB-C opening at the **top-right** (seen from the front; top-left when you look at the back). |
+| [`case.stl`](case/case.stl) | 72 × 48 × 38.6 mm | Front window of about 52 × 35 mm with slots behind it that hold the display board. The front is tilted back slightly with a sloped chin at the bottom. There is a 14 × 8.4 mm rocker-switch cutout at the **top, rear-left**, and a 17 × 27 mm board pocket under the **top, rear-right**. |
+| [`cap.stl`](case/cap.stl) | 72 × 48 × 5 mm back lid | Snaps into the back of the case. It has a T-shaped opening at the **top-right** (seen from the front; top-left when you look at the back): 9 × 4 mm for the USB-C port, with an 18 × 3 mm slot above it for the edge of the TP4056 board. |
 
 Interior layout:
 
