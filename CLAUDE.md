@@ -83,6 +83,10 @@ python tools/threat_icons.py
 
 Since the portal is non-blocking, avoid long blocking work on the main loop.
 
+### Button
+
+`updateButton()` in `main.cpp` polls the BOOT button on GPIO 9 (active low, `INPUT_PULLUP`) every loop. A short press restarts the device on release. Holding it for `BUTTON_LONG_PRESS_MS` (5 s) calls `wifiManager.resetSettings()` and restarts while the button is still held, so the device comes up with the setup portal. GPIO 9 is a strapping pin: holding it during power-on or reset enters the ROM download mode instead of running the firmware.
+
 ## Configuration
 
 - **Pins and panel:** `include/DisplayConfig.h`. The panel class (`LGFX`) is defined in `main.cpp`.

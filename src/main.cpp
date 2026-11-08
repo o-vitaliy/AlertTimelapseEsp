@@ -62,6 +62,10 @@ constexpr uint16_t SCREEN_HEIGHT = 240;
 constexpr uint16_t BUFFER_LINES = 40;
 constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
 constexpr char WIFI_ACCESS_POINT_NAME[] = "AlertScreen-Setup";
+// The SuperMini's BOOT button: active low, pulled up.
+constexpr uint8_t BUTTON_PIN = 9;
+constexpr unsigned long BUTTON_DEBOUNCE_MS = 50;
+constexpr unsigned long BUTTON_LONG_PRESS_MS = 5000;
 
 LGFX tft;
 NoWifiPage noWifiPage(WIFI_ACCESS_POINT_NAME);
@@ -74,6 +78,8 @@ unsigned long lastWiFiAttempt = 0;
 bool wasWiFiConnected = false;
 bool configPortalStarted = false;
 bool displayRefreshDeferred = false;
+bool buttonPressed = false;
+unsigned long buttonPressedAt = 0;
 
 // Sends LVGL's output to the panel, except while ContentPage owns the screen.
 void displayFlush(lv_display_t* lvDisplay, const lv_area_t* area,
@@ -185,11 +191,45 @@ void repaintIfDeferred() {
   }
 }
 
+// A short press restarts the device. Holding the button for
+// BUTTON_LONG_PRESS_MS erases the saved Wi-Fi credentials and restarts, which
+// brings up the setup access point. The long press acts while still held.
+void updateButton() {
+  const bool isDown = digitalRead(BUTTON_PIN) == LOW;
+  const unsigned long now = millis();
+
+  if (isDown && !buttonPressed) {
+    buttonPressed = true;
+    buttonPressedAt = now;
+    return;
+  }
+  if (!buttonPressed) {
+    return;
+  }
+
+  const unsigned long heldMs = now - buttonPressedAt;
+  if (isDown && heldMs >= BUTTON_LONG_PRESS_MS) {
+    Serial.println("Button held: resetting Wi-Fi settings and restarting.");
+    wifiManager.resetSettings();
+    delay(100);
+    ESP.restart();
+  }
+  if (!isDown) {
+    buttonPressed = false;
+    if (heldMs >= BUTTON_DEBOUNCE_MS) {
+      Serial.println("Button pressed: restarting.");
+      delay(100);
+      ESP.restart();
+    }
+  }
+}
+
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
   delay(200);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
   Serial.println("Starting ESP32-C3 LVGL Hello World...");
 
   initPanel();
@@ -225,6 +265,7 @@ void loop() {
   lv_tick_inc(now - previousMs);
   previousMs = now;
 
+  updateButton();
   updateWiFiState();
   repaintIfDeferred();
 
